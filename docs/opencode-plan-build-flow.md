@@ -15,7 +15,9 @@
 7. [Build 模式：完整流程](#build-模式完整流程)
 8. [Multi-Agent 協作機制](#multi-agent-協作機制)
 9. [事件系統與 UI 更新](#事件系統與-ui-更新)
-10. [關鍵檔案索引](#關鍵檔案索引)
+10. [全部 Tool 詳解](#全部-tool-詳解)
+11. [防越界機制：Tool 安全邊界](#防越界機制tool-安全邊界)
+12. [關鍵檔案索引](#關鍵檔案索引)
 
 ---
 
@@ -763,6 +765,7 @@ Plan agent 的 permission 繼承自 `defaults`（`"*": "allow"`），再限制 e
 | `task` | 子 Session | 啟動 explore / general subagent |
 | `question` | Permission Bus | 向使用者提問，等待回答 |
 | `write` | Filesystem | **只允許寫入 plan 檔案**（其他 path 被 deny） |
+| `edit` | Filesystem | **只允許 edit plan 檔案**（精準局部替換，非全覆蓋）|
 | `plan_exit` | Permission Bus | 宣告 plan 完成，觸發 build 切換提示 |
 
 > **Explore subagent** 的工具清單與 plan agent 幾乎相同（glob/grep/list/bash/read/webfetch/websearch/codesearch），但**明確禁止所有寫入操作**（permission `"*": "deny"` 再個別 allow 上列工具）。
@@ -872,6 +875,118 @@ sequenceDiagram
 | 輸出格式 | 單頁完整內容（HTML→Markdown） | 多筆結果 + 摘要（含 livecrawl 選項）| 多筆程式碼片段（token 數可控）|
 | 典型用途 | 讀取已知文件頁面、API spec | 搜尋不知道 URL 的主題 | 找第三方 SDK 使用範例 |
 | permission id | `webfetch` | `websearch` | `codesearch` |
+
+---
+
+### Plan 檔案的修改方式：write vs edit
+
+Plan agent 對 plan 檔案有兩種修改工具，行為完全不同。
+
+**關鍵檔案：** `src/tool/write.ts`、`src/tool/edit.ts`
+
+#### `write` 工具 — 全覆蓋
+
+```
+參數：{ filePath, content }
+行為：將 content 完整寫入檔案，原有內容全部被取代
+用途：plan 檔案不存在時初次建立，或需要完全重寫整份計畫時
+```
+
+```
+write(".opencode/plans/01JRX.md", "# Plan\n## 步驟一\n...")
+→ 整個檔案被 content 取代（fs.writeWithDirs 全覆蓋）
+→ 寫入後執行 format.file()（程式碼格式化）
+→ 發布 File.Event.Edited + FileWatcher.Event.Updated
+→ LSP 檢查是否有 diagnostics
+```
+
+#### `edit` 工具 — 精準局部替換
+
+```
+參數：{ filePath, oldString, newString, replaceAll? }
+行為：在檔案中找到 oldString 並替換為 newString，其餘內容不動
+```
+
+這是 edit 工具的核心，不是單純的字串搜尋。當 AI 提供的 `oldString` 和檔案實際內容有輕微差異時（縮排不同、空白不同、換行風格不同...），edit 工具會依序嘗試 **9 種 Replacer** 來容錯匹配：
+
+```mermaid
+flowchart TD
+    Input["edit({oldString, newString})"] --> R1
+
+    R1["① SimpleReplacer\n完全精確的字串比對\ncontent.indexOf(oldString)"]
+    R1 -->|找到唯一匹配| Replace
+    R1 -->|找不到| R2
+
+    R2["② LineTrimmedReplacer\n逐行 trim() 後比對\n允許每行前後空白不同"]
+    R2 -->|找到| Replace
+    R2 -->|找不到| R3
+
+    R3["③ BlockAnchorReplacer\n用第一行+最後一行當錨點\n中間用 Levenshtein 距離計算相似度\n單一候選 threshold=0.0（很寬鬆）\n多個候選 threshold=0.3"]
+    R3 -->|找到| Replace
+    R3 -->|找不到| R4
+
+    R4["④ WhitespaceNormalizedReplacer\n所有連續空白壓縮為單一空格後比對\n處理 tab vs space 差異"]
+    R4 -->|找到| Replace
+    R4 -->|找不到| R5
+
+    R5["⑤ IndentationFlexibleReplacer\n移除共同縮排後比對\n允許整段縮排層級不同"]
+    R5 -->|找到| Replace
+    R5 -->|找不到| R6
+
+    R6["⑥ EscapeNormalizedReplacer\n將 \\n \\t \\r 等轉義序列展開後比對\n處理 AI 生成的轉義字元"]
+    R6 -->|找到| Replace
+    R6 -->|找不到| R7
+
+    R7["⑦ TrimmedBoundaryReplacer\n去掉 oldString 頭尾空白後比對\n處理 AI 多加空行的情況"]
+    R7 -->|找到| Replace
+    R7 -->|找不到| R8
+
+    R8["⑧ ContextAwareReplacer\n錨點 + 中間行 50% 相似度判斷\nblockLines.length 需完全相同"]
+    R8 -->|找到| Replace
+    R8 -->|找不到| R9
+
+    R9["⑨ MultiOccurrenceReplacer\n找出所有完全匹配的位置\n（與 replaceAll 搭配使用）"]
+    R9 -->|找到| Replace
+    R9 -->|全部找不到| Err1["Error: Could not find oldString"]
+
+    Replace{"找到幾個匹配?"}
+    Replace -->|唯一匹配| Apply["替換成功\nafs.writeWithDirs(contentNew)\nformat.file() + LSP check"]
+    Replace -->|多個匹配 且 replaceAll=false| Err2["Error: Found multiple matches\nProvide more surrounding context"]
+    Replace -->|多個匹配 且 replaceAll=true| ApplyAll["全部替換\ncontent.replaceAll(search, newString)"]
+```
+
+**edit 工具的安全機制（`src/tool/edit.ts:103`）：**
+
+```typescript
+yield* filetime.assert(ctx.sessionID, filePath)
+```
+
+每次 edit 前會斷言：自從這個 session 最後一次讀取此檔案後，該檔案沒有被外部程式修改過。若有衝突則報錯，防止覆蓋使用者手動的修改。
+
+**`oldString === ""` 的特殊行為：**
+
+```typescript
+if (params.oldString === "") {
+  // 不讀現有檔案，直接寫入 newString（建立新檔或追加內容的替代用法）
+  yield* afs.writeWithDirs(filePath, params.newString)
+}
+```
+
+#### 實際使用模式（Plan 檔案）
+
+```
+Phase 4 初次建立：
+  AI 呼叫 write(planPath, 完整 markdown 內容)
+  → 全覆蓋，建立新 plan 檔案
+
+Phase 3 審查後微調：
+  AI 呼叫 edit(planPath, oldString="## 步驟二\n舊描述", newString="## 步驟二\n新描述")
+  → 只改那一段，其餘不動
+
+Phase 3 使用者問答後補充：
+  AI 呼叫 edit(planPath, oldString="## 驗證", newString="## 驗證\n- 同時更新測試：是")
+  → 在特定位置插入新內容
+```
 
 ---
 
@@ -1229,3 +1344,712 @@ MESSAGES:
 `llm.ts:127-131` 中有意保持兩段結構，利用 provider 的 **prompt caching**：
 - `system[0]`（base prompt）變化少 → 命中 cache
 - `system[1]`（環境/skills/instructions）包含動態內容 → 每次稍有不同
+
+---
+
+## 全部 Tool 詳解
+
+> 關鍵檔案：`src/tool/registry.ts`、`src/tool/tool.ts`
+
+### Tool 框架基礎
+
+所有 tool 都通過 `Tool.define()` 包裝（`src/tool/tool.ts`），自動注入：
+1. **Zod schema 驗證** — 參數非法時轉為 `invalid` tool 呼叫
+2. **`Truncate.output()`** — 輸出超過 2000 行 / 50 KB 時寫入臨時檔，返回預覽 + 路徑提示
+3. **`ctx.ask()`** — 每個 tool 在執行前必須呼叫 permission gate
+
+`Tool.Context` 包含：
+```typescript
+interface Context {
+  sessionID, messageID, callID  // 識別此次呼叫
+  abort: AbortSignal             // 可取消
+  ask(permission)                // 等待使用者/設定放行
+  metadata(update)               // 向 UI 推送即時更新
+  extra?: Record<string, unknown> // 注入 promptOps 等擴充
+}
+```
+
+### Tool 可用性規則（registry.ts）
+
+```mermaid
+graph TD
+    R[registry.ts 初始化] --> B[載入所有 builtin tools]
+    B --> M{model-based filtering}
+    M -->|GPT non-4 模型| AP[apply_patch 替換 edit+write]
+    M -->|其他模型| EW[保留 edit + write]
+    B --> Q{OPENCODE_CLIENT 環境變數}
+    Q -->|app / cli / desktop<br/>或 ENABLE_QUESTION_TOOL| QT[啟用 question tool]
+    Q -->|其他| NoQ[停用 question tool]
+    B --> EX{exa 可用性}
+    EX -->|opencode provider<br/>或 ENABLE_EXA flag| ExaTools[啟用 websearch + codesearch]
+    EX -->|其他| NoExa[停用 websearch + codesearch]
+    B --> CS[載入 custom tools from config dirs]
+    B --> PS[載入 plugin tools]
+```
+
+---
+
+### 1. `bash` — Shell 命令執行
+
+**用途：** 在專案目錄中執行任意 shell 命令（Bash/PowerShell）
+
+**特色：Tree-sitter AST 解析**
+
+```mermaid
+flowchart TD
+    A[bash tool 呼叫] --> B[Tree-sitter 解析命令 AST]
+    B --> C{解析成功?}
+    C -->|是| D[提取 rm/cp/mv/mkdir... 的檔案路徑參數]
+    C -->|否| E[fallback: 不做路徑預先掃描]
+    D --> F[assertExternalDirectory 權限檢查每個路徑]
+    E --> G
+    F --> G[ctx.ask bash 權限]
+    G --> H[spawn child process]
+    H --> I{輸出模式}
+    I -->|streaming| J[ctx.metadata 即時推送每行輸出]
+    I -->|非 streaming| K[等待全部輸出]
+    J --> L{結束條件 race}
+    K --> L
+    L -->|正常退出| M[返回 stdout+stderr]
+    L -->|abort signal| N[kill process → 返回 abort 訊息]
+    L -->|timeout 2分鐘| O[kill process → 返回 timeout 訊息]
+```
+
+**關鍵實作（`src/tool/bash.ts`）：**
+- 使用 `web-tree-sitter` + bash/powershell grammar 解析命令，AST 走訪找出 `rm -rf /etc` 之類的危險路徑 → 在執行前做 `external_directory` 權限掃描
+- `ExitStatus` 跟蹤退出碼；非零退出碼也返回而非拋錯，讓 AI 判讀
+- 輸出通過 `Truncate.output()` 截斷，全文保存到截斷目錄
+
+---
+
+### 2. `read` — 讀取檔案/目錄
+
+**用途：** 讀取文字檔、圖片、PDF、或列出目錄內容
+
+```mermaid
+flowchart TD
+    A[read tool 呼叫] --> B{stat 路徑}
+    B -->|不存在| C[miss: 搜尋同目錄相似名稱 → 提示 Did you mean?]
+    B -->|Directory| D[list 目錄項目 → 排序 → 分頁返回]
+    B -->|File| E{mime type 判斷}
+    E -->|image/* 或 pdf| F[以 base64 返回作為 attachment]
+    E -->|其他| G{isBinaryFile?}
+    G -->|是| H[Error: Cannot read binary file]
+    G -->|否| I[readline streaming 逐行讀取]
+    I --> J{是否超限?}
+    J -->|超過 2000 行或 50KB| K[截斷 + 提示 offset 繼續]
+    J -->|未超限| L[全文輸出 + End of file 提示]
+    I --> M[instruction.resolve: 自動注入 AGENTS.md 內容]
+    L --> N[lsp.touchFile: 背景暖機 LSP]
+    K --> N
+```
+
+**關鍵細節：**
+- **binary 偵測：** 先看副檔名（zip/exe/dll/jar 等直接判 binary），再讀前 4096 bytes，含 null byte 即 binary，非可印字元 > 30% 即 binary
+- **instruction.resolve()：** 根據讀取的檔案路徑往上找 AGENTS.md，透過 claims map 確保每條 assistant message 只注入一次
+- **每行最長 2000 chars**，超長行會附加 `... (line truncated to 2000 chars)` 後綴
+
+---
+
+### 3. `edit` — 目標字串替換
+
+**用途：** 在現有檔案中做精確的 oldString → newString 替換
+
+**9-Replacer 降級鏈：**
+
+```mermaid
+flowchart TD
+    A[edit 呼叫] --> B[filetime.assert: 確認檔案未被外部修改]
+    B --> C{oldString 是否為空?}
+    C -->|是| D[create/overwrite 模式: 直接寫入 newString]
+    C -->|否| E[Replacer 1: 完全精確匹配]
+    E -->|失敗| F[Replacer 2: 修剪尾端空白後精確匹配]
+    F -->|失敗| G[Replacer 3: 忽略縮排差異匹配]
+    G -->|失敗| H[Replacer 4: 正規化空白匹配]
+    H -->|失敗| I[Replacer 5: 忽略行尾空白]
+    I -->|失敗| J[Replacer 6: 模糊空白匹配]
+    J -->|失敗| K[Replacer 7: CRLF/LF 正規化]
+    K -->|失敗| L[Replacer 8: Unicode 正規化 NFC]
+    L -->|失敗| M[Replacer 9: Levenshtein 相似度 ≥ 0.9 匹配]
+    M -->|失敗| N[Error: oldString not found in file]
+    D --> O[寫入檔案]
+    E & F & G & H & I & J & K & L & M -->|成功| O
+    O --> P[lsp.diagnostics: 報告型別錯誤]
+    O --> Q[bus.publish File.Event.Edited]
+```
+
+- `replaceAll: true` 時替換所有匹配（預設只替換第一個）
+- 每次 edit 後都呼叫 LSP 取得 diagnostics，若有錯誤一並返回給 AI
+
+---
+
+### 4. `write` — 完整覆寫檔案
+
+**用途：** 建立新檔案或完全覆寫現有檔案
+
+**實作（`src/tool/write.ts`）：**
+- 同樣使用 `edit` 權限（非獨立 `write` 權限）
+- `assertExternalDirectoryEffect` 檢查路徑合法性
+- 寫入後觸發 `format.file()`（自動格式化）
+- 對受影響的最多 5 個專案檔執行 `lsp.diagnostics()`
+
+---
+
+### 5. `multiedit` — 多段順序編輯
+
+**用途：** 在同一檔案上依序執行多個 edit 操作
+
+**實作（`src/tool/multiedit.ts`）：**
+- 完全包裝 `EditTool`，對 `params.edits` 陣列逐一呼叫 `edit.execute()`
+- 每個 edit 操作獨立返回結果，`output` 使用最後一個 edit 的結果
+- 適合 AI 在同一檔案做多處不相關的修改而不需要重讀整個檔案
+
+---
+
+### 6. `apply_patch` — Patch 格式多檔操作
+
+**用途：** 用 unified patch 格式同時 add/update/delete/move 多個檔案（給 non-4 GPT 模型用）
+
+```mermaid
+flowchart TD
+    A[apply_patch 呼叫] --> B[Patch.parsePatch 解析 patchText]
+    B --> C{解析成功?}
+    C -->|失敗| ERR[Error: parse failed]
+    C -->|成功| D[hunks 列表]
+    D --> E[for each hunk: assertExternalDirectory]
+    E --> F[ctx.ask edit 權限 + diff metadata]
+    F --> G[for each hunk 應用變更]
+    G --> H{hunk type}
+    H -->|add| I[afs.writeWithDirs: 建立檔案]
+    H -->|update| J[Patch.deriveNewContentsFromChunks + afs.write]
+    H -->|delete| K[afs.remove]
+    H -->|move| L[writeWithDirs 到新路徑 + remove 舊路徑]
+    I & J & K & L --> M[format.file + bus.publish]
+    M --> N[lsp.touchFile + lsp.diagnostics]
+    N --> O[返回 summary: A/M/D 每個檔案]
+```
+
+- patch 格式：`*** Begin Patch / *** Update File: path / *** End Patch`
+- 支援 `move_path` 欄位做跨路徑移動
+
+---
+
+### 7. `glob` — 檔案模式匹配
+
+**用途：** 用 glob 模式搜尋符合的檔案路徑（如 `**/*.ts`）
+
+**實作（`src/tool/glob.ts`）：**
+- 後端：Ripgrep `--files --glob <pattern>`
+- 限制：最多返回 100 個結果，依修改時間降序排序（最新在前）
+- 不受 `.gitignore` 限制（使用 `--no-ignore` 時）
+
+---
+
+### 8. `grep` — 內容搜尋
+
+**用途：** 用 regex 搜尋檔案內容
+
+**實作（`src/tool/grep.ts`）：**
+- 後端：系統 `rg` binary（ChildProcess 呼叫）
+- `--field-match-separator=|` 格式：`filepath|line_number|match_content`
+- 限制：最多 100 個匹配，依修改時間降序排序
+- 支援 `include` glob filter（如 `*.ts`）
+
+---
+
+### 9. `list` — 目錄樹列表
+
+**用途：** 遞迴列出目錄下的檔案結構（tree 格式）
+
+**實作（`src/tool/ls.ts`）：**
+- 後端：Ripgrep `--files` 收集所有檔案
+- 自動忽略：`node_modules/`, `.git/`, `dist/`, `build/`, `target/`, `vendor/`, `.venv/` 等 20+ 常見不必要目錄
+- 限制：最多 100 個檔案
+- 輸出：重建 tree 目錄結構（先顯示子目錄，再顯示檔案，字母排序）
+
+```
+/home/user/myproject/
+  src/
+    agent/
+      agent.ts
+    session/
+      prompt.ts
+  package.json
+```
+
+---
+
+### 10. `webfetch` — HTTP 抓取
+
+**用途：** 抓取 URL 內容，HTML 自動轉換為 Markdown
+
+**實作（`src/tool/webfetch.ts`）：**
+- 直接 `fetch()` HTTP GET 請求
+- HTML → Markdown：使用 `TurndownService`（保留連結、標題、程式碼區塊）
+- 限制：5 MB 上限，30 秒 timeout（可配置）
+- SVG/XML 直接返回原始文字
+
+---
+
+### 11. `websearch` — 網路搜尋
+
+**用途：** 用自然語言查詢搜尋網路
+
+**實作（`src/tool/websearch.ts`）：**
+- 後端：Exa Search API（`/search` endpoint）
+- 啟用條件：`opencode` provider 或 `OPENCODE_ENABLE_EXA=1`
+- 預設返回 8 個結果
+- 支援 `livecrawl` 選項（強制即時爬取而非快取）
+- 每個結果包含：title、URL、published date、text snippet
+
+---
+
+### 12. `codesearch` — 程式碼搜尋
+
+**用途：** 專門搜尋程式碼相關問題（GitHub、Stack Overflow 等）
+
+**實作（`src/tool/codesearch.ts`）：**
+- 後端：Exa Search API code 模式（`type: "keyword"`）
+- 啟用條件：同 `websearch`
+- 輸出量由 token count 控制（1000–50000 tokens），避免 context 爆炸
+- 搜尋結果包含完整程式碼內容（非摘要）
+
+---
+
+### 13. `task` — 生成/恢復子 Agent Session
+
+**用途：** 產生一個子 agent 執行獨立任務（Multi-Agent 核心工具）
+
+```mermaid
+flowchart TD
+    A[task tool 呼叫] --> B{task_id 有值?}
+    B -->|有| C[sessions.get task_id: 恢復現有 session]
+    B -->|無| D[sessions.create: 新建子 session<br/>parentID = 當前 sessionID]
+    C & D --> E[agent.get subagent_type]
+    E --> F{agent 有 task/todowrite 權限?}
+    F -->|無| G[在子 session 禁用對應 tool]
+    F -->|有| H[保持啟用]
+    G & H --> I[ctx.metadata: 推送 task 開始事件到 UI]
+    I --> J[ops.resolvePromptParts: 解析 prompt 模板]
+    J --> K[ops.prompt: 遞迴呼叫 SessionPrompt.prompt]
+    K --> L[子 agent runLoop 完整執行]
+    L --> M[返回最後一條 text part 作為結果]
+    M --> N[輸出 task_id + task_result]
+```
+
+**子 session 特性：**
+- 完全獨立的 message history
+- 繼承 abort signal（父取消 → 子也取消）
+- 返回結果後父繼續自己的 runLoop
+
+---
+
+### 14. `lsp` — LSP 語言服務查詢
+
+**用途：** 對程式碼執行語義操作（跳轉定義、查找引用、hover 說明等）
+
+**支援操作（`src/tool/lsp.ts`）：**
+
+| 操作 | 說明 |
+|------|------|
+| `goToDefinition` | 跳轉到符號定義位置 |
+| `findReferences` | 找出所有引用位置 |
+| `hover` | 取得符號的類型/文件說明 |
+| `documentSymbol` | 列出檔案所有符號（函式、類別等） |
+| `workspaceSymbol` | 跨整個 workspace 搜尋符號 |
+| `goToImplementation` | 跳轉到介面的具體實作 |
+| `prepareCallHierarchy` | 準備呼叫階層分析 |
+| `incomingCalls` | 誰呼叫了此函式 |
+| `outgoingCalls` | 此函式呼叫了誰 |
+
+**工作流程：**
+1. 路徑解析（相對 → 絕對）+ `assertExternalDirectory` 檢查
+2. `lsp.touchFile()` — 確保 LSP server 已載入此檔案
+3. `lsp.hasClients()` — 確認有對應語言的 LSP server 在執行
+4. 執行對應操作，返回 JSON 格式結果
+
+---
+
+### 15. `todowrite` — 更新待辦清單
+
+**用途：** 讓 AI 維護當前任務的 TODO 清單（整個清單全量更新）
+
+**實作（`src/tool/todo.ts`）：**
+- 接受完整 todos 陣列（全量覆蓋，非增量）
+- 透過 `Todo.Service` 持久化到 session storage
+- 每個 todo 項目包含：`id`, `content`, `status` (pending/in_progress/completed), `priority`
+- 返回格式：`N todos（未完成數）`
+
+**設計意圖（來自 anthropic.txt 系統提示）：**
+> 複雜任務開始時先建立 TodoWrite 計畫，完成後打勾，讓使用者能看到進度
+
+---
+
+### 16. `question` — 向使用者提問
+
+**用途：** AI 在執行過程中暫停並向使用者索取資訊
+
+**實作（`src/tool/question.ts`）：**
+- 接受 `questions` 陣列，每個 question 可有多個選項（select）或自由文字
+- 透過 `Question.Service.ask()` 觸發 UI 呈現問題卡片
+- **阻塞** runLoop 直到使用者回答
+- 返回格式：`"問題文字"="答案"` 組合字串
+
+**啟用條件：**
+- 環境變數 `OPENCODE_CLIENT` = `app` / `cli` / `desktop`
+- 或 `OPENCODE_ENABLE_QUESTION_TOOL=1`
+
+---
+
+### 17. `plan_exit` — 退出 Plan 模式
+
+**用途：** Plan agent 完成計劃後呼叫，詢問使用者是否切換到 Build agent
+
+**流程（`src/tool/plan.ts`）：**
+
+```mermaid
+flowchart TD
+    A[plan_exit 呼叫] --> B[取得當前 session 的 plan 檔案路徑]
+    B --> C[question.ask: 計劃完成，是否切換到 build agent?]
+    C --> D{使用者選擇}
+    D -->|No| E[RejectedError → runLoop 繼續停在 plan 模式]
+    D -->|Yes| F[建立 synthetic user message]
+    F --> G[agent: build, synthetic: true]
+    G --> H[text: The plan has been approved... Execute the plan]
+    H --> I[返回: Switching to build agent]
+    I --> J[runLoop 下次迭代讀取 synthetic message → 切換 agent]
+```
+
+**切換機制：** 通過寫入 `agent: "build"` 的 synthetic user message 實現 agent 切換，而非直接改變 session 狀態
+
+---
+
+### 18. `skill` — 載入技能指令
+
+**用途：** 動態載入 skill 定義（專門化工作流程指引）
+
+**實作（`src/tool/skill.ts`）：**
+- 從 `Skill.Service` 獲取可用技能列表
+- **description 是動態的**：在 tool 初始化時根據目前可用 skills 生成（若無 skills 則說明無可用技能）
+- 載入後返回 `<skill_content name="...">` 區塊，包含：
+  - SKILL.md 全文
+  - 技能基礎目錄（`file://` URL）
+  - 最多 10 個技能相關檔案列表（`<skill_files>`）
+
+---
+
+### 19. `invalid` — 無效工具佔位
+
+**用途：** 當 AI 呼叫的工具 Zod 驗證失敗時，registry 將其轉為 `invalid` tool 呼叫
+
+**實作（`src/tool/invalid.ts`）：**
+```
+參數：{ tool: string, error: string }
+輸出：The arguments provided to the tool are invalid: <error>
+```
+讓 AI 知道參數有問題，但不拋出例外破壞 runLoop
+
+---
+
+### 20. `Truncate` — 輸出截斷服務（非獨立 tool）
+
+**用途：** 被所有 tool 的 `Tool.define()` 包裝層自動使用，管理大型輸出
+
+**策略（`src/tool/truncate.ts`）：**
+
+```mermaid
+flowchart TD
+    A[tool 輸出 text] --> B{text 是否超過 2000行 或 50KB?}
+    B -->|否| C[直接返回 content]
+    B -->|是| D[截取 head/tail N 行 且 ≤ 50KB]
+    D --> E[將完整內容寫入截斷目錄<br/>~/.opencode/truncation/tool_XXXX]
+    E --> F{agent 有 task tool?}
+    F -->|有| G[提示: 用 Task tool 讓 explore agent 處理此檔案]
+    F -->|無| H[提示: 用 Grep/Read with offset 查看]
+    G & H --> I[返回: 預覽 + ... N lines truncated ... + hint]
+```
+
+**清理機制：** 截斷目錄中超過 7 天的檔案每小時自動清理一次
+
+---
+
+### Tool 全覽表
+
+```mermaid
+graph LR
+    subgraph 檔案操作
+        read["read\n讀取檔案/目錄"]
+        write["write\n完整覆寫"]
+        edit["edit\n精確替換 9-Replacer"]
+        multiedit["multiedit\n多段順序編輯"]
+        apply_patch["apply_patch\nPatch格式多檔操作\n(GPT non-4)"]
+    end
+
+    subgraph 搜尋導航
+        glob["glob\nGlob模式檔案搜尋\nripgrep-backed"]
+        grep["grep\nRegex內容搜尋\nripgrep-backed"]
+        list["list\n目錄樹結構\n自動忽略常見雜目錄"]
+    end
+
+    subgraph Shell執行
+        bash["bash\n執行Shell命令\nTree-sitter AST解析"]
+    end
+
+    subgraph 網路外部
+        webfetch["webfetch\nHTTP GET\nHTML→Markdown"]
+        websearch["websearch\nExa自然語言搜尋\n(需Exa)"]
+        codesearch["codesearch\nExa程式碼搜尋\n(需Exa)"]
+    end
+
+    subgraph AI協調
+        task["task\n生成/恢復子Agent\nMulti-Agent核心"]
+    end
+
+    subgraph IDE整合
+        lsp["lsp\n9種LSP操作\n定義/引用/hover..."]
+    end
+
+    subgraph Session管理
+        todowrite["todowrite\n全量更新TODO清單"]
+        question["question\n向使用者提問\n(需client)"]
+    end
+
+    subgraph Agent控制
+        plan_exit["plan_exit\n計畫完成→切換Build\n(僅plan agent)"]
+        skill["skill\n載入技能指令\n動態description"]
+    end
+
+    subgraph 系統內部
+        invalid["invalid\n驗證失敗佔位"]
+        Truncate["Truncate\n輸出截斷服務\n(自動)"]
+    end
+```
+
+---
+
+### Tool 使用權限矩陣
+
+| Tool | build agent | plan agent | general subagent | explore subagent |
+|------|:-----------:|:----------:|:----------------:|:----------------:|
+| bash | ✅ | ❌ | ✅ | ❌ |
+| read | ✅ | ✅ | ✅ | ✅ |
+| edit | ✅ | ❌（計畫檔案除外）| ✅ | ❌ |
+| write | ✅ | ❌（計畫檔案除外）| ✅ | ❌ |
+| multiedit | ✅ | ❌ | ✅ | ❌ |
+| apply_patch | ✅ | ❌ | ✅ | ❌ |
+| glob | ✅ | ✅ | ✅ | ✅ |
+| grep | ✅ | ✅ | ✅ | ✅ |
+| list | ✅ | ✅ | ✅ | ✅ |
+| webfetch | ✅ | ✅ | ✅ | ✅ |
+| websearch | ✅ | ✅ | ✅ | ✅ |
+| codesearch | ✅ | ✅ | ✅ | ✅ |
+| task | ✅ | ✅ | ❌（可配置）| ❌ |
+| lsp | ✅ | ✅ | ✅ | ❌ |
+| todowrite | ✅ | ✅ | ❌（可配置）| ❌ |
+| question | ✅（需client）| ✅（需client）| ❌ | ❌ |
+| plan_exit | ❌ | ✅ | ❌ | ❌ |
+| skill | ✅ | ✅ | ✅ | ✅ |
+
+> `explore` agent 預設只允許：read、glob、grep、list、webfetch、websearch、codesearch、lsp（部分）
+> `plan` agent 可以 edit/write **僅限** session 計畫檔案（PLAN.md 路徑被明確 allow）
+
+
+---
+
+## 防越界機制：Tool 安全邊界
+
+> OpenCode **沒有** OS 級沙盒（無 seccomp / chroot / namespace），防護完全在應用層，由三道關卡串聯組成。
+
+### 整體防護架構
+
+```mermaid
+flowchart TD
+    AI[AI 決定呼叫 tool] --> T[tool.execute]
+    T --> L1
+
+    subgraph L1["第一層：目錄邊界（assertExternalDirectoryEffect）"]
+        CP{Instance.containsPath\nfilepath?}
+        CP -->|Yes 在專案內| PASS1[通過]
+        CP -->|No 在專案外| EDA["ctx.ask\npermission=external_directory\npatterns=[dir/*]"]
+    end
+
+    subgraph L2["第二層：Permission 規則引擎（evaluate）"]
+        EVAL["evaluate(permission, pattern,\n  agent.permission ++ session.permission)"]
+        EVAL -->|action=allow| PASS2[通過]
+        EVAL -->|action=deny| DENY[DeniedError\nAI 收到阻止訊息]
+        EVAL -->|action=ask| ASK[Deferred 暫停\n→ UI 彈出確認]
+        ASK -->|使用者 Allow once| PASS2
+        ASK -->|使用者 Allow always| PASS2_A[通過 + 加入 approved 規則\ncascade 放行同 session 其他 pending]
+        ASK -->|使用者 Reject| REJ[RejectedError\ncascade reject 同 session 所有 pending]
+    end
+
+    subgraph L3["第三層：Agent 層內建規則"]
+        BUILD["build: '*' = allow"]
+        PLAN["plan: edit '*' = deny\n(計畫檔路徑除外)"]
+        EXPLORE["explore: '*' = deny\n(明確允許 read/web/search)"]
+    end
+
+    PASS1 --> L2
+    EDA --> L2
+    L3 -->|作為 ruleset 基底| L2
+    PASS2 --> EXEC[tool 實際執行]
+    PASS2_A --> EXEC
+    DENY --> END[tool 不執行]
+    REJ --> END
+```
+
+---
+
+### 第一層：目錄邊界檢查
+
+**關鍵檔案：** `src/tool/external-directory.ts`、`src/project/instance.ts`
+
+所有會操作檔案的 tool（`read`、`write`、`edit`、`bash` 等）在執行前統一呼叫 `assertExternalDirectoryEffect`：
+
+```
+Instance.containsPath(filepath)
+  ├─ Filesystem.contains(Instance.directory, filepath)
+  │    └─ !path.relative(parent, child).startsWith("..")
+  └─ Filesystem.contains(Instance.worktree, filepath)
+       └─ 例外：worktree === "/" 時跳過
+            （非 git 專案 worktree 為 "/"，不能讓它匹配所有絕對路徑）
+```
+
+- 路徑**在專案內** → 直接進入第二層
+- 路徑**在專案外** → 先觸發 `external_directory` permission check，使用者確認後才能繼續
+
+#### `bash` 的特殊處理：Tree-sitter AST 掃描
+
+bash 命令可能一次操作多個路徑，且路徑藏在各種子命令裡，無法只看一個參數。
+
+```mermaid
+flowchart TD
+    CMD["bash tool 收到命令\n例：rm -rf /tmp /etc /var"] --> TS[Tree-sitter 解析 AST]
+    TS --> WALK[走訪 AST 節點\n找 rm/cp/mv/mkdir/touch... 的參數]
+    WALK --> DIRS["scan.dirs = ['/tmp', '/etc', '/var']"]
+    DIRS --> FILTER["過濾：Instance.containsPath?"]
+    FILTER -->|在專案內| SKIP[略過]
+    FILTER -->|在專案外| COLLECT["收集為 glob 模式\n/tmp/* , /etc/* , /var/*"]
+    COLLECT --> ASK["ctx.ask\npermission=external_directory\npatterns=['/tmp/*', '/etc/*', '/var/*']"]
+```
+
+---
+
+### 第二層：Permission 規則引擎
+
+**關鍵檔案：** `src/permission/index.ts`、`src/permission/evaluate.ts`
+
+`ctx.ask()` 實際呼叫 `Permission.ask()`，帶入合併後的 ruleset：
+
+```typescript
+// src/session/prompt.ts:386
+ruleset: Permission.merge(
+  agent.permission,    // agent 定義的規則（build/plan/explore 不同）
+  session.permission,  // session 規則（來自 config 或 task tool 注入給子 agent）
+)
+```
+
+**評估函式（`findLast` = 最後一條匹配的規則贏）：**
+
+```typescript
+// src/permission/evaluate.ts
+function evaluate(permission, pattern, ...rulesets) {
+  const rules = rulesets.flat()
+  const match = rules.findLast(
+    (rule) =>
+      Wildcard.match(permission, rule.permission) &&  // 兩個維度都支援 wildcard
+      Wildcard.match(pattern, rule.pattern)
+  )
+  return match ?? { action: "ask" }  // 沒有任何規則匹配 → 預設問使用者
+}
+```
+
+`permission` 維度（tool 種類）和 `pattern` 維度（路徑/資源）**雙重 wildcard**，所以可以精細設定：
+
+```jsonc
+// opencode.jsonc 範例
+{
+  "permission": {
+    "bash": {
+      "npm run *": "allow",   // npm 命令直接放行
+      "git *":    "allow",    // git 命令直接放行
+      "*":        "ask"       // 其他 bash 命令都要詢問
+    },
+    "edit": {
+      "src/**":  "allow",    // src 目錄可直接編輯
+      "*.lock":  "deny",     // lock 檔絕對不能動
+      "*":       "ask"
+    }
+  }
+}
+```
+
+**三種結果：**
+
+| action | 效果 |
+|--------|------|
+| `allow` | 直接繼續，tool 執行 |
+| `deny` | 立即拋出 `DeniedError`，附上觸發的規則訊息告知 AI |
+| `ask` | 暫停，發出 `permission.asked` 事件，UI 彈出確認視窗，等使用者回覆 |
+
+**使用者回覆選項：**
+
+| 回覆 | 效果 |
+|------|------|
+| `once` | 本次放行，規則不保存 |
+| `always` | 放行 + 將此 permission/pattern 加入 `approved` 規則集，同 session 中後續相同請求自動通過；並 cascade 放行目前所有等待中的相同 session pending 請求 |
+| `reject` | `RejectedError`，AI 收到「使用者拒絕」訊息；同時 cascade reject 同 session 所有其他 pending 請求 |
+
+---
+
+### 第三層：Agent 層內建規則
+
+Agent 定義自帶的 `permission` 陣列是 ruleset 的**基底**，使用者 config 規則追加在後（findLast → config 優先）：
+
+| Agent | 規則摘要 | 實際效果 |
+|-------|----------|----------|
+| `build` | `"*": "allow"` | 幾乎所有操作預設放行（仍受 external_directory 守門） |
+| `plan` | `edit: { "*": "deny" }` + plan 檔路徑 allow | 在非計畫檔上呼叫 edit/write → 直接 DeniedError，不問使用者 |
+| `explore` | `"*": "deny"` + 明確 allow read/glob/grep/webfetch/websearch | bash 完全無法執行；無法寫入任何檔案 |
+| `general` (subagent) | 繼承父 session 規則 | 能讀寫，但受父 agent 傳入的 session.permission 限制 |
+
+---
+
+### 案例追蹤：`rm -rf /` 的完整攔截過程
+
+```mermaid
+sequenceDiagram
+    participant AI
+    participant Bash as bash tool
+    participant TS as Tree-sitter
+    participant AD as assertExternalDir
+    participant PM as Permission.ask()
+    participant UI as 使用者 UI
+
+    AI->>Bash: execute("rm -rf /")
+    Bash->>TS: parseBashAST("rm -rf /")
+    TS-->>Bash: scan.dirs = ["/"]
+    Bash->>AD: Instance.containsPath("/")
+    AD-->>Bash: false（"/" 不在 /home/user/myproject 內）
+    Bash->>PM: ask({ permission:"external_directory", patterns:["///*"] })
+    PM->>PM: evaluate → 無匹配規則 → action=ask
+    PM->>UI: bus.publish(permission.asked)
+    UI-->>PM: 使用者點擊 Reject
+    PM-->>Bash: RejectedError
+    Bash-->>AI: "The user rejected permission to use this specific tool call."
+    Note over AI: AI 收到錯誤訊息，不執行，重新規劃
+```
+
+---
+
+### 重要限制（不是完美沙盒）
+
+| 限制 | 說明 |
+|------|------|
+| **Tree-sitter 有盲點** | `eval "$CMD"` / 變數展開 `$DEST` / heredoc 中的路徑等複雜結構無法提取，此時只做 `bash` 整體 permission check，無路徑分析 |
+| **間接腳本** | `bash ./deploy.sh` 只能看到腳本路徑；腳本內的 `rm -rf /tmp/*` 在 Tree-sitter 層不可見 |
+| **網路操作不受路徑保護** | `curl -X DELETE https://api.prod.com` 不涉及本地路徑，不觸發 `external_directory`，只受 `bash` 本身 permission 控制 |
+| **`"*": "allow"` 設定** | 使用者若在 config 設全放行，`external_directory` check 也被 allow，所有路徑保護失效 |
+| **無 OS 隔離** | 整套機制是應用層軟體，OpenCode 進程本身有完整的 OS 使用者權限，不像 Docker/VM 有硬隔離 |
+
+**結論：** OpenCode 的防越界是「需要使用者配合的信任機制」，核心設計是「超出專案目錄的所有操作預設必須詢問使用者」，而非強制沙盒。最終決定權在使用者與其 config 設定。
