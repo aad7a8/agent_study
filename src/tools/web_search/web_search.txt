@@ -1,0 +1,9 @@
+Tool: web_search
+Description: Search the web using DDGS and return a list of results.
+
+Args:
+  query (str, required): The search query string.
+  max_results (int, optional, default=5): Maximum number of results to return.
+
+Returns:
+  List of dicts, each with keys: title (str), href (str), body (str).

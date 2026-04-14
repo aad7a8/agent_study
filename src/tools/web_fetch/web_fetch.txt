@@ -1,0 +1,13 @@
+Tool: web_fetch
+Description: Fetch a URL and extract its content using DDGS extract().
+
+Args:
+  url (str, required): The URL to fetch and extract content from.
+  fmt (str, optional, default="text_markdown"): Output format.
+    - "text_markdown": HTML converted to Markdown, preserves links/headers/lists.
+    - "text_plain":    HTML converted to plain text.
+    - "text_rich":     HTML converted to rich text with headers/lists (no link URLs).
+    - "text":          Raw HTML.
+
+Returns:
+  Dict with keys: url (str), content (str).
