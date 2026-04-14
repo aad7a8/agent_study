@@ -1,0 +1,14 @@
+Tool: question
+Description: Pause the agent loop and ask the user one or more questions. Use when the task is ambiguous
+and guessing would lead to wrong results. Returns user answers formatted as a string.
+
+Args:
+  questions (list[dict], required): List of question objects, each with:
+    question (str, required): The question text to display.
+    options (list[dict], optional): Predefined choices. Each option has:
+      label (str): Short display name.
+      description (str, optional): Explanation of the option.
+    If options is omitted, the user types a free-text answer.
+
+Returns:
+  str — formatted as: "question1"="answer1", "question2"="answer2"

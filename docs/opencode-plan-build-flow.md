@@ -69,6 +69,8 @@ graph TD
     Proc -->|"SSE stream"| CLI
 ```
 
+
+
 ---
 
 ## 入口層：TUI vs CLI
@@ -90,9 +92,12 @@ sequenceDiagram
     TUI->>TUI: 更新 UI 狀態
 ```
 
+
+
 **關鍵檔案：** `src/cli/cmd/tui/thread.ts`
 
 TUI 啟動流程：
+
 1. `TuiThreadCommand` 建立 Worker 子程序
 2. 透過 `Rpc.client` 將所有 fetch 請求代理到 Worker（Worker 中執行真正的 Server）
 3. SolidJS 組件透過 SDK 訂閱 `global.event` 事件串流
@@ -121,7 +126,10 @@ sequenceDiagram
     CLI->>CLI: 等待 session.status = "idle" → 結束
 ```
 
+
+
 **CLI 的 Permission 規則（無互動模式）：**
+
 ```typescript
 // src/cli/cmd/run.ts:362-378
 const rules: Permission.Ruleset = [
@@ -139,15 +147,18 @@ const rules: Permission.Ruleset = [
 
 主要端點：
 
-| 端點 | 功能 |
-|------|------|
-| `POST /session` | 建立新 session |
-| `POST /session/{id}/prompt` | 送出使用者訊息並觸發 AI |
+
+| 端點                           | 功能               |
+| ---------------------------- | ---------------- |
+| `POST /session`              | 建立新 session      |
+| `POST /session/{id}/prompt`  | 送出使用者訊息並觸發 AI    |
 | `POST /session/{id}/command` | 執行 slash command |
-| `GET /session/status` | SSE 事件流 |
-| `POST /session/{id}/fork` | 複製 session |
+| `GET /session/status`        | SSE 事件流          |
+| `POST /session/{id}/fork`    | 複製 session       |
+
 
 `/prompt` 端點呼叫路徑：
+
 ```
 POST /session/{id}/prompt
   → AppRuntime.run(SessionPrompt.Service)
@@ -199,6 +210,8 @@ flowchart TD
     CheckOutcome -->|result === continue| SetBusy
 ```
 
+
+
 ---
 
 ## Prompt 組裝細節
@@ -245,6 +258,8 @@ flowchart TD
     Split --> Messages["轉換為 LLM messages:\n每個 system[i] → {role:'system', content: system[i]}\n接在 user/assistant 歷史訊息之前"]
     Final --> Messages
 ```
+
+
 
 ### 組裝完成後的完整 Prompt 範例
 
@@ -583,15 +598,17 @@ You should execute on the plan defined within it
 
 ### 各情境 System Prompt 差異對照
 
-| | build agent | plan agent | explore subagent |
-|---|---|---|---|
-| 區塊 1 來源 | `anthropic.txt` | `anthropic.txt`（同上） | `explore.txt`（取代） |
-| 區塊 2 env | ✓ | ✓ | ✓ |
-| 區塊 3 skills | ✓（有 skill 工具） | ✓ | ✓ |
-| 區塊 4 instructions | ✓ AGENTS.md | ✓ AGENTS.md | ✓ AGENTS.md |
-| Plan 工作流程 | ✗ | **user message** 中注入 | ✗ |
-| Build-switch | ✗ | ✗ | ✗ |
-| Build-switch 出現 | plan→build 切換時 user message 中注入 | ✗ | ✗ |
+
+|                   | build agent                     | plan agent           | explore subagent  |
+| ----------------- | ------------------------------- | -------------------- | ----------------- |
+| 區塊 1 來源           | `anthropic.txt`                 | `anthropic.txt`（同上）  | `explore.txt`（取代） |
+| 區塊 2 env          | ✓                               | ✓                    | ✓                 |
+| 區塊 3 skills       | ✓（有 skill 工具）                   | ✓                    | ✓                 |
+| 區塊 4 instructions | ✓ AGENTS.md                     | ✓ AGENTS.md          | ✓ AGENTS.md       |
+| Plan 工作流程         | ✗                               | **user message** 中注入 | ✗                 |
+| Build-switch      | ✗                               | ✗                    | ✗                 |
+| Build-switch 出現   | plan→build 切換時 user message 中注入 | ✗                    | ✗                 |
+
 
 > **核心規律**：system prompt 本體各 agent 幾乎相同；**agent 行為差異主要靠 permission 規則限制工具**，以及在 **user message 注入 synthetic text parts** 來改變 AI 的行為模式，而非靠不同的 system prompt。
 
@@ -645,6 +662,8 @@ flowchart LR
     C --> F["組裝為 'Instructions from: {path}\n{content}'"]
     E --> F
 ```
+
+
 
 **Read 工具觸發的 inline 載入（`src/session/instruction.ts:187-229`）：**
 
@@ -755,18 +774,20 @@ Your turn should only end with either asking a question or calling plan_exit.
 
 Plan agent 的 permission 繼承自 `defaults`（`"*": "allow"`），再限制 edit 為唯讀。因此以下工具全部可用：
 
-| 工具 | 來源 | 說明 |
-|------|------|------|
-| `glob` / `grep` / `read` / `list` | 本地 Filesystem | 搜尋與讀取專案檔案 |
-| `bash` | 本地 Shell | 執行唯讀命令（`git log`, `cat`, `find`...） |
-| `webfetch` | 外部 HTTP | 抓取指定 URL，HTML 自動轉 Markdown（TurndownService） |
-| `websearch` | Exa Search API | 全網搜尋，返回帶摘要的結果列表 |
-| `codesearch` | Exa Code Search API | 搜尋程式碼範例、API 文件、SDK 用法 |
-| `task` | 子 Session | 啟動 explore / general subagent |
-| `question` | Permission Bus | 向使用者提問，等待回答 |
-| `write` | Filesystem | **只允許寫入 plan 檔案**（其他 path 被 deny） |
-| `edit` | Filesystem | **只允許 edit plan 檔案**（精準局部替換，非全覆蓋）|
-| `plan_exit` | Permission Bus | 宣告 plan 完成，觸發 build 切換提示 |
+
+| 工具                                | 來源                  | 說明                                          |
+| --------------------------------- | ------------------- | ------------------------------------------- |
+| `glob` / `grep` / `read` / `list` | 本地 Filesystem       | 搜尋與讀取專案檔案                                   |
+| `bash`                            | 本地 Shell            | 執行唯讀命令（`git log`, `cat`, `find`...）         |
+| `webfetch`                        | 外部 HTTP             | 抓取指定 URL，HTML 自動轉 Markdown（TurndownService） |
+| `websearch`                       | Exa Search API      | 全網搜尋，返回帶摘要的結果列表                             |
+| `codesearch`                      | Exa Code Search API | 搜尋程式碼範例、API 文件、SDK 用法                       |
+| `task`                            | 子 Session           | 啟動 explore / general subagent               |
+| `question`                        | Permission Bus      | 向使用者提問，等待回答                                 |
+| `write`                           | Filesystem          | **只允許寫入 plan 檔案**（其他 path 被 deny）           |
+| `edit`                            | Filesystem          | **只允許 edit plan 檔案**（精準局部替換，非全覆蓋）           |
+| `plan_exit`                       | Permission Bus      | 宣告 plan 完成，觸發 build 切換提示                    |
+
 
 > **Explore subagent** 的工具清單與 plan agent 幾乎相同（glob/grep/list/bash/read/webfetch/websearch/codesearch），但**明確禁止所有寫入操作**（permission `"*": "deny"` 再個別 allow 上列工具）。
 
@@ -865,16 +886,20 @@ sequenceDiagram
     end
 ```
 
+
+
 ### webfetch / websearch / codesearch 三者差異
 
-| | webfetch | websearch | codesearch |
-|---|---|---|---|
-| 工具檔案 | `src/tool/webfetch.ts` | `src/tool/websearch.ts` | `src/tool/codesearch.ts` |
-| 後端 | 直接 HTTP GET | Exa Search API | Exa Search API（code 模式）|
-| 輸入 | URL | 自然語言查詢 | 自然語言查詢（偏程式碼）|
-| 輸出格式 | 單頁完整內容（HTML→Markdown） | 多筆結果 + 摘要（含 livecrawl 選項）| 多筆程式碼片段（token 數可控）|
-| 典型用途 | 讀取已知文件頁面、API spec | 搜尋不知道 URL 的主題 | 找第三方 SDK 使用範例 |
-| permission id | `webfetch` | `websearch` | `codesearch` |
+
+|               | webfetch               | websearch                 | codesearch               |
+| ------------- | ---------------------- | ------------------------- | ------------------------ |
+| 工具檔案          | `src/tool/webfetch.ts` | `src/tool/websearch.ts`   | `src/tool/codesearch.ts` |
+| 後端            | 直接 HTTP GET            | Exa Search API            | Exa Search API（code 模式）  |
+| 輸入            | URL                    | 自然語言查詢                    | 自然語言查詢（偏程式碼）             |
+| 輸出格式          | 單頁完整內容（HTML→Markdown）  | 多筆結果 + 摘要（含 livecrawl 選項） | 多筆程式碼片段（token 數可控）       |
+| 典型用途          | 讀取已知文件頁面、API spec      | 搜尋不知道 URL 的主題             | 找第三方 SDK 使用範例            |
+| permission id | `webfetch`             | `websearch`               | `codesearch`             |
+
 
 ---
 
@@ -955,6 +980,8 @@ flowchart TD
     Replace -->|多個匹配 且 replaceAll=true| ApplyAll["全部替換\ncontent.replaceAll(search, newString)"]
 ```
 
+
+
 **edit 工具的安全機制（`src/tool/edit.ts:103`）：**
 
 ```typescript
@@ -963,7 +990,7 @@ yield* filetime.assert(ctx.sessionID, filePath)
 
 每次 edit 前會斷言：自從這個 session 最後一次讀取此檔案後，該檔案沒有被外部程式修改過。若有衝突則報錯，防止覆蓋使用者手動的修改。
 
-**`oldString === ""` 的特殊行為：**
+`**oldString === ""` 的特殊行為：**
 
 ```typescript
 if (params.oldString === "") {
@@ -1014,6 +1041,7 @@ build: {
 ```
 
 **預設 permissions（`src/agent/agent.ts:86-103`）：**
+
 ```typescript
 const defaults = Permission.fromConfig({
   "*": "allow",              // 預設允許所有工具
@@ -1037,7 +1065,8 @@ const defaults = Permission.fromConfig({
 
 當 session 中曾經出現 plan agent 的回覆，且現在切換到 build agent 時，在 user message 中注入：
 
-**`src/session/prompt/build-switch.txt` 內容：**
+`**src/session/prompt/build-switch.txt` 內容：**
+
 ```
 <system-reminder>
 Your operational mode has changed from plan to build.
@@ -1048,6 +1077,7 @@ and utilize your arsenal of tools as needed.
 ```
 
 同時（實驗性 plan mode 下）注入：
+
 ```
 A plan file exists at {plan}. You should execute on the plan defined within it
 ```
@@ -1122,6 +1152,8 @@ sequenceDiagram
     SP-->>U: 完成
 ```
 
+
+
 ---
 
 ## Multi-Agent 協作機制
@@ -1155,6 +1187,8 @@ flowchart TD
     L --> M["返回結果給父 LLM<br/>tool-result"]
 ```
 
+
+
 **Task Tool 的 `task_id` 機制（`src/tool/task.ts`）：**
 
 ```typescript
@@ -1174,14 +1208,16 @@ const nextSession = session ?? await sessions.create({
 
 ### Agent 類型與權限矩陣
 
-| Agent | mode | 允許工具 | 禁止工具 | 用途 |
-|-------|------|----------|----------|------|
-| `build` | primary | 全部 | - | 預設主要 agent |
-| `plan` | primary | read/glob/grep/task(explore)/question/plan_exit | edit(大部分) | 規劃模式 |
-| `general` | subagent | 全部 | todowrite | 通用多步驟任務 |
-| `explore` | subagent | read/glob/grep/bash/webfetch/websearch | 所有寫入工具 | 快速探索程式碼 |
-| `compaction` | primary (hidden) | 無 | 全部 | 壓縮長對話 |
-| `title` | primary (hidden) | 無 | 全部 | 生成 session 標題 |
+
+| Agent        | mode             | 允許工具                                            | 禁止工具      | 用途            |
+| ------------ | ---------------- | ----------------------------------------------- | --------- | ------------- |
+| `build`      | primary          | 全部                                              | -         | 預設主要 agent    |
+| `plan`       | primary          | read/glob/grep/task(explore)/question/plan_exit | edit(大部分) | 規劃模式          |
+| `general`    | subagent         | 全部                                              | todowrite | 通用多步驟任務       |
+| `explore`    | subagent         | read/glob/grep/bash/webfetch/websearch          | 所有寫入工具    | 快速探索程式碼       |
+| `compaction` | primary (hidden) | 無                                               | 全部        | 壓縮長對話         |
+| `title`      | primary (hidden) | 無                                               | 全部        | 生成 session 標題 |
+
 
 ### Subtask 建立機制（`handleSubtask`）
 
@@ -1199,6 +1235,8 @@ flowchart LR
     D["完成後 continue loop"] -->
     E["主 LLM 接收 subtask 結果"]
 ```
+
+
 
 ---
 
@@ -1232,6 +1270,8 @@ sequenceDiagram
     Bus->>Server: 派發
     Server->>Client: SSE event
 ```
+
+
 
 ### CLI 的事件處理（`src/cli/cmd/run.ts:449-570`）
 
@@ -1279,27 +1319,31 @@ stateDiagram-v2
     step_end --> [*] : "finish"
 ```
 
+
+
 ---
 
 ## 關鍵檔案索引
 
-| 檔案 | 職責 |
-|------|------|
-| `src/cli/cmd/tui/thread.ts` | TUI 入口，Worker 代理，SolidJS app 初始化 |
-| `src/cli/cmd/run.ts` | CLI `run` 指令，headless 執行模式 |
-| `src/session/prompt.ts` | 核心：`SessionPrompt.runLoop`, `createUserMessage`, `resolveTools`, `insertReminders` |
-| `src/session/llm.ts` | LLM 呼叫包裝，system prompt 最終組裝，`streamText()` 呼叫 |
-| `src/session/processor.ts` | LLM stream 事件處理，tool call 生命週期管理 |
-| `src/session/system.ts` | `SystemPrompt.provider()`, `environment()`, `skills()` |
-| `src/session/instruction.ts` | AGENTS.md/CLAUDE.md 載入，inline instruction 注入 |
-| `src/agent/agent.ts` | Agent 定義（build/plan/general/explore/...），`Agent.generate()` |
-| `src/tool/task.ts` | Task tool，建立子 session，multi-agent 協作 |
-| `src/session/compaction.ts` | Token 超限時壓縮歷史訊息 |
-| `src/server/routes/session.ts` | HTTP API 端點 |
-| `src/session/prompt/anthropic.txt` | Anthropic 模型的 base system prompt |
-| `src/session/prompt/plan.txt` | Plan 模式的完整工作流程指令 |
-| `src/session/prompt/build-switch.txt` | Plan → Build 切換提醒 |
-| `src/session/prompt/max-steps.txt` | 步驟上限達到時的提示 |
+
+| 檔案                                    | 職責                                                                                 |
+| ------------------------------------- | ---------------------------------------------------------------------------------- |
+| `src/cli/cmd/tui/thread.ts`           | TUI 入口，Worker 代理，SolidJS app 初始化                                                   |
+| `src/cli/cmd/run.ts`                  | CLI `run` 指令，headless 執行模式                                                         |
+| `src/session/prompt.ts`               | 核心：`SessionPrompt.runLoop`, `createUserMessage`, `resolveTools`, `insertReminders` |
+| `src/session/llm.ts`                  | LLM 呼叫包裝，system prompt 最終組裝，`streamText()` 呼叫                                      |
+| `src/session/processor.ts`            | LLM stream 事件處理，tool call 生命週期管理                                                   |
+| `src/session/system.ts`               | `SystemPrompt.provider()`, `environment()`, `skills()`                             |
+| `src/session/instruction.ts`          | AGENTS.md/CLAUDE.md 載入，inline instruction 注入                                       |
+| `src/agent/agent.ts`                  | Agent 定義（build/plan/general/explore/...），`Agent.generate()`                        |
+| `src/tool/task.ts`                    | Task tool，建立子 session，multi-agent 協作                                               |
+| `src/session/compaction.ts`           | Token 超限時壓縮歷史訊息                                                                    |
+| `src/server/routes/session.ts`        | HTTP API 端點                                                                        |
+| `src/session/prompt/anthropic.txt`    | Anthropic 模型的 base system prompt                                                   |
+| `src/session/prompt/plan.txt`         | Plan 模式的完整工作流程指令                                                                   |
+| `src/session/prompt/build-switch.txt` | Plan → Build 切換提醒                                                                  |
+| `src/session/prompt/max-steps.txt`    | 步驟上限達到時的提示                                                                         |
+
 
 ---
 
@@ -1342,6 +1386,7 @@ MESSAGES:
 **二段式 system prompt 設計目的：**
 
 `llm.ts:127-131` 中有意保持兩段結構，利用 provider 的 **prompt caching**：
+
 - `system[0]`（base prompt）變化少 → 命中 cache
 - `system[1]`（環境/skills/instructions）包含動態內容 → 每次稍有不同
 
@@ -1354,11 +1399,13 @@ MESSAGES:
 ### Tool 框架基礎
 
 所有 tool 都通過 `Tool.define()` 包裝（`src/tool/tool.ts`），自動注入：
+
 1. **Zod schema 驗證** — 參數非法時轉為 `invalid` tool 呼叫
-2. **`Truncate.output()`** — 輸出超過 2000 行 / 50 KB 時寫入臨時檔，返回預覽 + 路徑提示
-3. **`ctx.ask()`** — 每個 tool 在執行前必須呼叫 permission gate
+2. `**Truncate.output()`** — 輸出超過 2000 行 / 50 KB 時寫入臨時檔，返回預覽 + 路徑提示
+3. `**ctx.ask()**` — 每個 tool 在執行前必須呼叫 permission gate
 
 `Tool.Context` 包含：
+
 ```typescript
 interface Context {
   sessionID, messageID, callID  // 識別此次呼叫
@@ -1386,6 +1433,8 @@ graph TD
     B --> CS[載入 custom tools from config dirs]
     B --> PS[載入 plugin tools]
 ```
+
+
 
 ---
 
@@ -1415,7 +1464,10 @@ flowchart TD
     L -->|timeout 2分鐘| O[kill process → 返回 timeout 訊息]
 ```
 
+
+
 **關鍵實作（`src/tool/bash.ts`）：**
+
 - 使用 `web-tree-sitter` + bash/powershell grammar 解析命令，AST 走訪找出 `rm -rf /etc` 之類的危險路徑 → 在執行前做 `external_directory` 權限掃描
 - `ExitStatus` 跟蹤退出碼；非零退出碼也返回而非拋錯，讓 AI 判讀
 - 輸出通過 `Truncate.output()` 截斷，全文保存到截斷目錄
@@ -1444,7 +1496,10 @@ flowchart TD
     K --> N
 ```
 
+
+
 **關鍵細節：**
+
 - **binary 偵測：** 先看副檔名（zip/exe/dll/jar 等直接判 binary），再讀前 4096 bytes，含 null byte 即 binary，非可印字元 > 30% 即 binary
 - **instruction.resolve()：** 根據讀取的檔案路徑往上找 AGENTS.md，透過 claims map 確保每條 assistant message 只注入一次
 - **每行最長 2000 chars**，超長行會附加 `... (line truncated to 2000 chars)` 後綴
@@ -1478,6 +1533,8 @@ flowchart TD
     O --> Q[bus.publish File.Event.Edited]
 ```
 
+
+
 - `replaceAll: true` 時替換所有匹配（預設只替換第一個）
 - 每次 edit 後都呼叫 LSP 取得 diagnostics，若有錯誤一並返回給 AI
 
@@ -1488,6 +1545,7 @@ flowchart TD
 **用途：** 建立新檔案或完全覆寫現有檔案
 
 **實作（`src/tool/write.ts`）：**
+
 - 同樣使用 `edit` 權限（非獨立 `write` 權限）
 - `assertExternalDirectoryEffect` 檢查路徑合法性
 - 寫入後觸發 `format.file()`（自動格式化）
@@ -1500,6 +1558,7 @@ flowchart TD
 **用途：** 在同一檔案上依序執行多個 edit 操作
 
 **實作（`src/tool/multiedit.ts`）：**
+
 - 完全包裝 `EditTool`，對 `params.edits` 陣列逐一呼叫 `edit.execute()`
 - 每個 edit 操作獨立返回結果，`output` 使用最後一個 edit 的結果
 - 適合 AI 在同一檔案做多處不相關的修改而不需要重讀整個檔案
@@ -1529,6 +1588,8 @@ flowchart TD
     N --> O[返回 summary: A/M/D 每個檔案]
 ```
 
+
+
 - patch 格式：`*** Begin Patch / *** Update File: path / *** End Patch`
 - 支援 `move_path` 欄位做跨路徑移動
 
@@ -1539,6 +1600,7 @@ flowchart TD
 **用途：** 用 glob 模式搜尋符合的檔案路徑（如 `**/*.ts`）
 
 **實作（`src/tool/glob.ts`）：**
+
 - 後端：Ripgrep `--files --glob <pattern>`
 - 限制：最多返回 100 個結果，依修改時間降序排序（最新在前）
 - 不受 `.gitignore` 限制（使用 `--no-ignore` 時）
@@ -1550,6 +1612,7 @@ flowchart TD
 **用途：** 用 regex 搜尋檔案內容
 
 **實作（`src/tool/grep.ts`）：**
+
 - 後端：系統 `rg` binary（ChildProcess 呼叫）
 - `--field-match-separator=|` 格式：`filepath|line_number|match_content`
 - 限制：最多 100 個匹配，依修改時間降序排序
@@ -1562,6 +1625,7 @@ flowchart TD
 **用途：** 遞迴列出目錄下的檔案結構（tree 格式）
 
 **實作（`src/tool/ls.ts`）：**
+
 - 後端：Ripgrep `--files` 收集所有檔案
 - 自動忽略：`node_modules/`, `.git/`, `dist/`, `build/`, `target/`, `vendor/`, `.venv/` 等 20+ 常見不必要目錄
 - 限制：最多 100 個檔案
@@ -1584,6 +1648,7 @@ flowchart TD
 **用途：** 抓取 URL 內容，HTML 自動轉換為 Markdown
 
 **實作（`src/tool/webfetch.ts`）：**
+
 - 直接 `fetch()` HTTP GET 請求
 - HTML → Markdown：使用 `TurndownService`（保留連結、標題、程式碼區塊）
 - 限制：5 MB 上限，30 秒 timeout（可配置）
@@ -1596,6 +1661,7 @@ flowchart TD
 **用途：** 用自然語言查詢搜尋網路
 
 **實作（`src/tool/websearch.ts`）：**
+
 - 後端：Exa Search API（`/search` endpoint）
 - 啟用條件：`opencode` provider 或 `OPENCODE_ENABLE_EXA=1`
 - 預設返回 8 個結果
@@ -1609,6 +1675,7 @@ flowchart TD
 **用途：** 專門搜尋程式碼相關問題（GitHub、Stack Overflow 等）
 
 **實作（`src/tool/codesearch.ts`）：**
+
 - 後端：Exa Search API code 模式（`type: "keyword"`）
 - 啟用條件：同 `websearch`
 - 輸出量由 token count 控制（1000–50000 tokens），避免 context 爆炸
@@ -1637,7 +1704,10 @@ flowchart TD
     M --> N[輸出 task_id + task_result]
 ```
 
+
+
 **子 session 特性：**
+
 - 完全獨立的 message history
 - 繼承 abort signal（父取消 → 子也取消）
 - 返回結果後父繼續自己的 runLoop
@@ -1650,19 +1720,22 @@ flowchart TD
 
 **支援操作（`src/tool/lsp.ts`）：**
 
-| 操作 | 說明 |
-|------|------|
-| `goToDefinition` | 跳轉到符號定義位置 |
-| `findReferences` | 找出所有引用位置 |
-| `hover` | 取得符號的類型/文件說明 |
-| `documentSymbol` | 列出檔案所有符號（函式、類別等） |
-| `workspaceSymbol` | 跨整個 workspace 搜尋符號 |
-| `goToImplementation` | 跳轉到介面的具體實作 |
-| `prepareCallHierarchy` | 準備呼叫階層分析 |
-| `incomingCalls` | 誰呼叫了此函式 |
-| `outgoingCalls` | 此函式呼叫了誰 |
+
+| 操作                     | 說明                 |
+| ---------------------- | ------------------ |
+| `goToDefinition`       | 跳轉到符號定義位置          |
+| `findReferences`       | 找出所有引用位置           |
+| `hover`                | 取得符號的類型/文件說明       |
+| `documentSymbol`       | 列出檔案所有符號（函式、類別等）   |
+| `workspaceSymbol`      | 跨整個 workspace 搜尋符號 |
+| `goToImplementation`   | 跳轉到介面的具體實作         |
+| `prepareCallHierarchy` | 準備呼叫階層分析           |
+| `incomingCalls`        | 誰呼叫了此函式            |
+| `outgoingCalls`        | 此函式呼叫了誰            |
+
 
 **工作流程：**
+
 1. 路徑解析（相對 → 絕對）+ `assertExternalDirectory` 檢查
 2. `lsp.touchFile()` — 確保 LSP server 已載入此檔案
 3. `lsp.hasClients()` — 確認有對應語言的 LSP server 在執行
@@ -1675,12 +1748,14 @@ flowchart TD
 **用途：** 讓 AI 維護當前任務的 TODO 清單（整個清單全量更新）
 
 **實作（`src/tool/todo.ts`）：**
+
 - 接受完整 todos 陣列（全量覆蓋，非增量）
 - 透過 `Todo.Service` 持久化到 session storage
 - 每個 todo 項目包含：`id`, `content`, `status` (pending/in_progress/completed), `priority`
 - 返回格式：`N todos（未完成數）`
 
 **設計意圖（來自 anthropic.txt 系統提示）：**
+
 > 複雜任務開始時先建立 TodoWrite 計畫，完成後打勾，讓使用者能看到進度
 
 ---
@@ -1690,12 +1765,14 @@ flowchart TD
 **用途：** AI 在執行過程中暫停並向使用者索取資訊
 
 **實作（`src/tool/question.ts`）：**
+
 - 接受 `questions` 陣列，每個 question 可有多個選項（select）或自由文字
 - 透過 `Question.Service.ask()` 觸發 UI 呈現問題卡片
 - **阻塞** runLoop 直到使用者回答
 - 返回格式：`"問題文字"="答案"` 組合字串
 
 **啟用條件：**
+
 - 環境變數 `OPENCODE_CLIENT` = `app` / `cli` / `desktop`
 - 或 `OPENCODE_ENABLE_QUESTION_TOOL=1`
 
@@ -1720,6 +1797,8 @@ flowchart TD
     I --> J[runLoop 下次迭代讀取 synthetic message → 切換 agent]
 ```
 
+
+
 **切換機制：** 通過寫入 `agent: "build"` 的 synthetic user message 實現 agent 切換，而非直接改變 session 狀態
 
 ---
@@ -1729,6 +1808,7 @@ flowchart TD
 **用途：** 動態載入 skill 定義（專門化工作流程指引）
 
 **實作（`src/tool/skill.ts`）：**
+
 - 從 `Skill.Service` 獲取可用技能列表
 - **description 是動態的**：在 tool 初始化時根據目前可用 skills 生成（若無 skills 則說明無可用技能）
 - 載入後返回 `<skill_content name="...">` 區塊，包含：
@@ -1743,10 +1823,12 @@ flowchart TD
 **用途：** 當 AI 呼叫的工具 Zod 驗證失敗時，registry 將其轉為 `invalid` tool 呼叫
 
 **實作（`src/tool/invalid.ts`）：**
+
 ```
 參數：{ tool: string, error: string }
 輸出：The arguments provided to the tool are invalid: <error>
 ```
+
 讓 AI 知道參數有問題，但不拋出例外破壞 runLoop
 
 ---
@@ -1768,6 +1850,8 @@ flowchart TD
     F -->|無| H[提示: 用 Grep/Read with offset 查看]
     G & H --> I[返回: 預覽 + ... N lines truncated ... + hint]
 ```
+
+
 
 **清理機制：** 截斷目錄中超過 7 天的檔案每小時自動清理一次
 
@@ -1825,34 +1909,37 @@ graph LR
     end
 ```
 
+
+
 ---
 
 ### Tool 使用權限矩陣
 
-| Tool | build agent | plan agent | general subagent | explore subagent |
-|------|:-----------:|:----------:|:----------------:|:----------------:|
-| bash | ✅ | ❌ | ✅ | ❌ |
-| read | ✅ | ✅ | ✅ | ✅ |
-| edit | ✅ | ❌（計畫檔案除外）| ✅ | ❌ |
-| write | ✅ | ❌（計畫檔案除外）| ✅ | ❌ |
-| multiedit | ✅ | ❌ | ✅ | ❌ |
-| apply_patch | ✅ | ❌ | ✅ | ❌ |
-| glob | ✅ | ✅ | ✅ | ✅ |
-| grep | ✅ | ✅ | ✅ | ✅ |
-| list | ✅ | ✅ | ✅ | ✅ |
-| webfetch | ✅ | ✅ | ✅ | ✅ |
-| websearch | ✅ | ✅ | ✅ | ✅ |
-| codesearch | ✅ | ✅ | ✅ | ✅ |
-| task | ✅ | ✅ | ❌（可配置）| ❌ |
-| lsp | ✅ | ✅ | ✅ | ❌ |
-| todowrite | ✅ | ✅ | ❌（可配置）| ❌ |
-| question | ✅（需client）| ✅（需client）| ❌ | ❌ |
-| plan_exit | ❌ | ✅ | ❌ | ❌ |
-| skill | ✅ | ✅ | ✅ | ✅ |
+
+| Tool        | build agent | plan agent | general subagent | explore subagent |
+| ----------- | ----------- | ---------- | ---------------- | ---------------- |
+| bash        | ✅           | ❌          | ✅                | ❌                |
+| read        | ✅           | ✅          | ✅                | ✅                |
+| edit        | ✅           | ❌（計畫檔案除外）  | ✅                | ❌                |
+| write       | ✅           | ❌（計畫檔案除外）  | ✅                | ❌                |
+| multiedit   | ✅           | ❌          | ✅                | ❌                |
+| apply_patch | ✅           | ❌          | ✅                | ❌                |
+| glob        | ✅           | ✅          | ✅                | ✅                |
+| grep        | ✅           | ✅          | ✅                | ✅                |
+| list        | ✅           | ✅          | ✅                | ✅                |
+| webfetch    | ✅           | ✅          | ✅                | ✅                |
+| websearch   | ✅           | ✅          | ✅                | ✅                |
+| codesearch  | ✅           | ✅          | ✅                | ✅                |
+| task        | ✅           | ✅          | ❌（可配置）           | ❌                |
+| lsp         | ✅           | ✅          | ✅                | ❌                |
+| todowrite   | ✅           | ✅          | ❌（可配置）           | ❌                |
+| question    | ✅（需client）  | ✅（需client） | ❌                | ❌                |
+| plan_exit   | ❌           | ✅          | ❌                | ❌                |
+| skill       | ✅           | ✅          | ✅                | ✅                |
+
 
 > `explore` agent 預設只允許：read、glob、grep、list、webfetch、websearch、codesearch、lsp（部分）
 > `plan` agent 可以 edit/write **僅限** session 計畫檔案（PLAN.md 路徑被明確 allow）
-
 
 ---
 
@@ -1898,6 +1985,8 @@ flowchart TD
     REJ --> END
 ```
 
+
+
 ---
 
 ### 第一層：目錄邊界檢查
@@ -1932,6 +2021,8 @@ flowchart TD
     FILTER -->|在專案外| COLLECT["收集為 glob 模式\n/tmp/* , /etc/* , /var/*"]
     COLLECT --> ASK["ctx.ask\npermission=external_directory\npatterns=['/tmp/*', '/etc/*', '/var/*']"]
 ```
+
+
 
 ---
 
@@ -1986,19 +2077,23 @@ function evaluate(permission, pattern, ...rulesets) {
 
 **三種結果：**
 
-| action | 效果 |
-|--------|------|
-| `allow` | 直接繼續，tool 執行 |
-| `deny` | 立即拋出 `DeniedError`，附上觸發的規則訊息告知 AI |
-| `ask` | 暫停，發出 `permission.asked` 事件，UI 彈出確認視窗，等使用者回覆 |
+
+| action  | 效果                                           |
+| ------- | -------------------------------------------- |
+| `allow` | 直接繼續，tool 執行                                 |
+| `deny`  | 立即拋出 `DeniedError`，附上觸發的規則訊息告知 AI            |
+| `ask`   | 暫停，發出 `permission.asked` 事件，UI 彈出確認視窗，等使用者回覆 |
+
 
 **使用者回覆選項：**
 
-| 回覆 | 效果 |
-|------|------|
-| `once` | 本次放行，規則不保存 |
+
+| 回覆       | 效果                                                                                                           |
+| -------- | ------------------------------------------------------------------------------------------------------------ |
+| `once`   | 本次放行，規則不保存                                                                                                   |
 | `always` | 放行 + 將此 permission/pattern 加入 `approved` 規則集，同 session 中後續相同請求自動通過；並 cascade 放行目前所有等待中的相同 session pending 請求 |
-| `reject` | `RejectedError`，AI 收到「使用者拒絕」訊息；同時 cascade reject 同 session 所有其他 pending 請求 |
+| `reject` | `RejectedError`，AI 收到「使用者拒絕」訊息；同時 cascade reject 同 session 所有其他 pending 請求                                   |
+
 
 ---
 
@@ -2006,12 +2101,14 @@ function evaluate(permission, pattern, ...rulesets) {
 
 Agent 定義自帶的 `permission` 陣列是 ruleset 的**基底**，使用者 config 規則追加在後（findLast → config 優先）：
 
-| Agent | 規則摘要 | 實際效果 |
-|-------|----------|----------|
-| `build` | `"*": "allow"` | 幾乎所有操作預設放行（仍受 external_directory 守門） |
-| `plan` | `edit: { "*": "deny" }` + plan 檔路徑 allow | 在非計畫檔上呼叫 edit/write → 直接 DeniedError，不問使用者 |
-| `explore` | `"*": "deny"` + 明確 allow read/glob/grep/webfetch/websearch | bash 完全無法執行；無法寫入任何檔案 |
-| `general` (subagent) | 繼承父 session 規則 | 能讀寫，但受父 agent 傳入的 session.permission 限制 |
+
+| Agent                | 規則摘要                                                       | 實際效果                                       |
+| -------------------- | ---------------------------------------------------------- | ------------------------------------------ |
+| `build`              | `"*": "allow"`                                             | 幾乎所有操作預設放行（仍受 external_directory 守門）       |
+| `plan`               | `edit: { "*": "deny" }` + plan 檔路徑 allow                   | 在非計畫檔上呼叫 edit/write → 直接 DeniedError，不問使用者 |
+| `explore`            | `"*": "deny"` + 明確 allow read/glob/grep/webfetch/websearch | bash 完全無法執行；無法寫入任何檔案                       |
+| `general` (subagent) | 繼承父 session 規則                                             | 能讀寫，但受父 agent 傳入的 session.permission 限制    |
+
 
 ---
 
@@ -2040,16 +2137,20 @@ sequenceDiagram
     Note over AI: AI 收到錯誤訊息，不執行，重新規劃
 ```
 
+
+
 ---
 
 ### 重要限制（不是完美沙盒）
 
-| 限制 | 說明 |
-|------|------|
-| **Tree-sitter 有盲點** | `eval "$CMD"` / 變數展開 `$DEST` / heredoc 中的路徑等複雜結構無法提取，此時只做 `bash` 整體 permission check，無路徑分析 |
-| **間接腳本** | `bash ./deploy.sh` 只能看到腳本路徑；腳本內的 `rm -rf /tmp/*` 在 Tree-sitter 層不可見 |
-| **網路操作不受路徑保護** | `curl -X DELETE https://api.prod.com` 不涉及本地路徑，不觸發 `external_directory`，只受 `bash` 本身 permission 控制 |
-| **`"*": "allow"` 設定** | 使用者若在 config 設全放行，`external_directory` check 也被 allow，所有路徑保護失效 |
-| **無 OS 隔離** | 整套機制是應用層軟體，OpenCode 進程本身有完整的 OS 使用者權限，不像 Docker/VM 有硬隔離 |
+
+| 限制                    | 說明                                                                                                |
+| --------------------- | ------------------------------------------------------------------------------------------------- |
+| **Tree-sitter 有盲點**   | `eval "$CMD"` / 變數展開 `$DEST` / heredoc 中的路徑等複雜結構無法提取，此時只做 `bash` 整體 permission check，無路徑分析        |
+| **間接腳本**              | `bash ./deploy.sh` 只能看到腳本路徑；腳本內的 `rm -rf /tmp/`* 在 Tree-sitter 層不可見                               |
+| **網路操作不受路徑保護**        | `curl -X DELETE https://api.prod.com` 不涉及本地路徑，不觸發 `external_directory`，只受 `bash` 本身 permission 控制 |
+| `**"*": "allow"` 設定** | 使用者若在 config 設全放行，`external_directory` check 也被 allow，所有路徑保護失效                                    |
+| **無 OS 隔離**           | 整套機制是應用層軟體，OpenCode 進程本身有完整的 OS 使用者權限，不像 Docker/VM 有硬隔離                                           |
+
 
 **結論：** OpenCode 的防越界是「需要使用者配合的信任機制」，核心設計是「超出專案目錄的所有操作預設必須詢問使用者」，而非強制沙盒。最終決定權在使用者與其 config 設定。

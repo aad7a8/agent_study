@@ -75,8 +75,11 @@ TOOL_MAP = {
 def run_tool_call(tool_call) -> str:
     name = tool_call.function.name
     args = json.loads(tool_call.function.arguments)
-    result = TOOL_MAP[name](**args)
-    return json.dumps(result, ensure_ascii=False)
+    try:
+        result = TOOL_MAP[name](**args)
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
 
 
 def chat(messages: list[dict]) -> str:

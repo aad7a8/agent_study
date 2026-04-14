@@ -1,0 +1,19 @@
+Tool: edit
+Description: Replace an exact string (old_string) with a new string (new_string) in a file.
+Uses multiple fallback strategies to handle minor whitespace/indentation differences.
+For multiple edits to the same file, use multiedit instead.
+
+Args:
+  file_path (str, required): Path to the file to edit.
+  old_string (str, required): The exact text to find and replace. Must be unique in the file.
+                              Include enough surrounding context if needed.
+  new_string (str, required): The replacement text.
+  replace_all (bool, optional, default=False): If True, replaces all occurrences instead of requiring uniqueness.
+
+Fallback strategy order:
+  1. Exact string match
+  2. Line-trimmed match (strips leading/trailing whitespace per line)
+  3. Whitespace-normalized match (collapses all whitespace)
+
+Returns:
+  str — success message, or error describing why the edit failed.

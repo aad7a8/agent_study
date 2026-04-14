@@ -1,0 +1,10 @@
+Tool: glob
+Description: Find files matching a glob pattern using ripgrep. Results are sorted by modification time (most recent first).
+Automatically respects .gitignore.
+
+Args:
+  pattern (str, required): Glob pattern to match files (e.g. "**/*.py", "src/**/*.ts").
+  directory (str, optional, default="."): Root directory to search in.
+
+Returns:
+  list[str] — matching file paths, up to 100. Includes a truncation notice if more exist.

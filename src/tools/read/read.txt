@@ -1,0 +1,17 @@
+Tool: read
+Description: Read a file or list the contents of a directory.
+
+Args:
+  path (str, required): Absolute or relative path to a file or directory.
+  offset (int, optional, default=1): 1-indexed line number to start reading from.
+  limit (int, optional, default=2000): Maximum number of lines to return.
+
+Behavior:
+  - If path is a directory: returns a list of entries (directories have a trailing "/").
+  - If path is a file: returns lines in the format "line_num: content".
+  - Binary files are detected by extension or content scan and not read as text.
+  - If the file is not found, suggests similarly named files in the same directory.
+  - Use offset + limit to paginate large files.
+
+Returns:
+  str — formatted file content, directory listing, or error message.

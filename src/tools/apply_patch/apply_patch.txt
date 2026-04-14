@@ -1,0 +1,29 @@
+Tool: apply_patch
+Description: Apply an OpenAI-style patch to perform batch file operations (add, update, delete, move).
+Useful for multi-file changes in one call. Preferred over edit for GPT-series models that output patch format.
+
+Args:
+  patch (str, required): The patch content in OpenAI patch format:
+
+    *** Begin Patch
+    *** Add File: path/to/new.txt
+    +line to add
+    *** Update File: src/app.py
+    *** Move to: src/main.py        (optional rename)
+    @@ context line                 (anchor for locating the change)
+    -line to remove
+    +line to add
+    *** Delete File: obsolete.txt
+    *** End Patch
+
+  Operations:
+    - "Add File": creates a new file. Lines prefixed with "+" are file content.
+    - "Update File": modifies an existing file using @@ hunks.
+      - "@@ <line>": anchor line in the file (not removed, used for positioning).
+      - "-<line>": remove this line.
+      - "+<line>": insert this line after the anchor.
+    - "Delete File": removes a file.
+    - "Move to": renames the file after updating.
+
+Returns:
+  str — one result line per operation, or error messages for failed operations.

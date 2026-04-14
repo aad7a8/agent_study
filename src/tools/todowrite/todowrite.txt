@@ -1,0 +1,15 @@
+Tool: todowrite
+Description: Write (replace) the full todo list for the current session. Used to externalize the agent's
+working memory into a structured task list visible during the session. Does not write to disk.
+Only one todo may be "in_progress" at a time.
+
+Args:
+  todos (list[dict], required): The complete new todo list. Each item has:
+    id (str, required): Unique identifier (e.g. "1", "task-auth").
+    content (str, required): Description of the task.
+    status (str, optional, default="pending"): One of: pending, in_progress, completed, cancelled.
+
+Returns:
+  str — the rendered todo list, or an error message.
+
+Note: Call todoread() (no args) to view the current list without modifying it.

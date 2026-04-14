@@ -1,0 +1,14 @@
+Tool: multiedit
+Description: Apply multiple find-and-replace edits to the same file in sequence.
+Each edit uses the result of the previous as input. Stops immediately if any edit fails.
+Use this instead of calling edit multiple times for the same file.
+
+Args:
+  file_path (str, required): Path to the file to edit.
+  edits (list[dict], required): Ordered list of edit operations, each with:
+    old_string (str, required): Text to find and replace.
+    new_string (str, required): Replacement text.
+    replace_all (bool, optional, default=False): Replace all occurrences if True.
+
+Returns:
+  str — result of the last successful edit, or an error message indicating which edit failed.

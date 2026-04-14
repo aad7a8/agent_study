@@ -1,0 +1,14 @@
+Tool: grep
+Description: Search file contents using a regex pattern via ripgrep. Results sorted by file modification time.
+Automatically respects .gitignore and searches hidden files.
+
+Args:
+  pattern (str, required): Regular expression pattern to search for.
+  path (str, optional, default="."): File or directory to search in.
+  glob_pattern (str, optional): Additional glob filter (e.g. "*.py") to restrict which files are searched.
+
+Returns:
+  list[dict] — up to 100 matches, each with keys:
+    file (str): Path to the matching file.
+    line (int): Line number of the match.
+    content (str): The matched line content.

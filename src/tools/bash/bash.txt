@@ -1,0 +1,13 @@
+Tool: bash
+Description: Execute a shell command and return its output.
+
+Args:
+  command (str, required): The shell command to execute.
+  timeout (int, optional, default=120): Maximum seconds to wait before killing the process.
+  workdir (str, optional): Working directory to run the command in. Defaults to current directory.
+
+Returns:
+  dict with keys:
+    stdout (str): Standard output of the command.
+    stderr (str): Standard error of the command.
+    returncode (int): Exit code. 0 = success, non-zero = failure, -1 = timeout or error.
