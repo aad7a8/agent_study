@@ -31,6 +31,6 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Memory runtime files (keep folder, ignore contents)
-test/memory/*
-!test/memory/.gitkeep
+# temp runtime files (keep folder, ignore contents)
+test/temp/*
+!test/temp/.gitkeep
